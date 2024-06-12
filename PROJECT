@@ -1,0 +1,6 @@
+domain: tutorial.kubebuilder.io
+layout:
+- go.kubebuilder.io/v3
+projectName: kubebuilder-cronjob-demo
+repo: github.com/oceanweave/kubebuilder-cronjob-demo
+version: "3"

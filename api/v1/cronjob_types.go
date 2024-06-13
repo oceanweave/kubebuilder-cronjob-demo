@@ -17,7 +17,18 @@ limitations under the License.
 package v1
 
 import (
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// +kubebuilder:validation:Enum=Allow;Forbid;Replace
+type ConcurrencyPolicy string
+
+const (
+	AllowConcurrent   ConcurrencyPolicy = "Allow"
+	ForbidConcurrent  ConcurrencyPolicy = "Forbid"
+	ReplaceConcurrent ConcurrencyPolicy = "Replace"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -29,14 +40,37 @@ type CronJobSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// Foo is an example field of CronJob. Edit cronjob_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	//Foo string `json:"foo,omitempty"`
+
+	// +kubebuilder:validation:Minlength=0
+	Schedule string `json:"schedule"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	StartingDeadlineSecodes *int64 `json:"StartingDeadlineSecodes,omitempty"`
+	// +optional
+	ConcurrencyPolicy ConcurrencyPolicy `json:"ConcurrencyPolicy,omitempty"`
+	// +optional
+	Suspend     *bool                   `json:"suspend,omitempty"`
+	JobTemplate batchv1.JobTemplateSpec `json:"jobTemplate"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	SuccessfulJobsHistoryLimit *int32 `json:"SuccessfulJobsHistoryLimit,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	FailedJobsHistoryLimit *int32 `json:"failedJobsHistoryLimit,omitempty"`
 }
 
 // CronJobStatus defines the observed state of CronJob
 type CronJobStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	// +optional
+	Active []corev1.ObjectReference
+	// +optional
+	LastScheduleTime *metav1.Time
 }
+
+// root=true 这个注释告诉 object 这是一种 root type Kind。 然后，object 生成器会为我们生成 runtime.Object 接口的实现， 这是所有 Kinds 必须实现的接口。
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status

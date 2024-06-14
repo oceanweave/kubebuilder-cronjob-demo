@@ -24,12 +24,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/go-logr/logr"
 	batchv1 "github.com/oceanweave/kubebuilder-cronjob-demo/api/v1"
 )
 
 // CronJobReconciler reconciles a CronJob object
 type CronJobReconciler struct {
 	client.Client
+	Log    logr.Logger
 	Scheme *runtime.Scheme
 }
 
@@ -48,9 +50,14 @@ type CronJobReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
+	// 在 reconcile 方法的顶部提前分配一些 key-value ,以便查找在这个 reconciler 中所有的日志
+	// 创建一个新的 logr.Logger 实例，该实例会将当前处理的 CronJob 的命名空间和名称作为上下文信息附加到日志中。
+	// 这样在查看日志时，可以清楚地看到哪些日志条目与哪个 CronJob 实例相关联，从而更容易进行调试和问题排查。
+	_ = r.Log.WithValues("cronjob", req.NamespacedName)
 
 	// TODO(user): your logic here
 
+	//  result 为空，且 error 为 nil， 这表明 controller-runtime 已经成功 reconciled 了这个 object，无需进行任何重试
 	return ctrl.Result{}, nil
 }
 

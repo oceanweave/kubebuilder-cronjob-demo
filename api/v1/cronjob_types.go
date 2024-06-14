@@ -46,7 +46,7 @@ type CronJobSpec struct {
 	Schedule string `json:"schedule"`
 	// +kubebuilder:validation:Minimum=0
 	// +optional
-	StartingDeadlineSecodes *int64 `json:"StartingDeadlineSecodes,omitempty"`
+	StartingDeadlineSeconds *int64 `json:"StartingDeadlineSecodes,omitempty"`
 	// +optional
 	ConcurrencyPolicy ConcurrencyPolicy `json:"ConcurrencyPolicy,omitempty"`
 	// +optional
@@ -65,9 +65,9 @@ type CronJobStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	// +optional
-	Active []corev1.ObjectReference
+	Active []corev1.ObjectReference `json:"active,omitempty"`
 	// +optional
-	LastScheduleTime *metav1.Time
+	LastScheduleTime *metav1.Time `json:"LastScheduleTime,omitempty"`
 }
 
 // root=true 这个注释告诉 object 这是一种 root type Kind。 然后，object 生成器会为我们生成 runtime.Object 接口的实现， 这是所有 Kinds 必须实现的接口。

@@ -115,9 +115,8 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			if (c.Type == kbatchv1.JobComplete || c.Type == kbatchv1.JobFailed) && c.Status == corev1.ConditionTrue {
 				return true, c.Type
 			}
-
-			return false, ""
 		}
+		return false, ""
 	}
 	// 从创建 Job 时添加的 annotation 中获取到 Job 计划执行的时间
 	getScheduledTimeForJob := func(job *kbatchv1.Job) (*time.Time, error) {
@@ -296,13 +295,116 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	scheduledResult := ctrl.Result{RequeueAfter: nextRun.Sub(r.Now())}
 	log = log.WithValues("now", r.Now(), "next run", nextRun)
 
-	//  result 为空，且 error 为 nil， 这表明 controller-runtime 已经成功 reconciled 了这个 object，无需进行任何重试
-	return ctrl.Result{}, nil
+	// 6. 运行新的 Job，确定新 Job 没有超过 deadline 时间，且不会被我们 concurrency 规则 block
+	if missedRun.IsZero() {
+		log.V(1).Info("no upcoming scheduled time, sleeping until nexet")
+		return scheduledResult, nil
+	}
+	// 确定没有超过 StartingDeadlineSeconds 时间
+	log = log.WithValues("current run", missedRun)
+	tooLate := false
+	// 上次错过的执行时间 + 时间容忍窗口 < 当前时间，表示太晚了
+	if cronJob.Spec.StartingDeadlineSeconds != nil {
+		tooLate = missedRun.Add(time.Duration(*cronJob.Spec.StartingDeadlineSeconds) * time.Second).Before(r.Now())
+	}
+	if tooLate {
+		log.V(1).Info("missed starting deadline for last run, sleeping till next")
+		return scheduledResult, nil
+	}
+	// 若不得不运行一个 Job，需要等现有 Job 完成之后，替换现有 Job 或添加一个新 Job
+	// 若我们的信息由于 cache 的延迟而过时，那我们将在获得 up-to-date 信息时重新排队
+	// 判断如何运行此 Job -- 并发策略可能会禁止我们同时运行多个 Job
+	if cronJob.Spec.ConcurrencyPolicy == batchv1.ForbidConcurrent && len(activeJobs) > 0 {
+		log.V(1).Info("concurrency policy blocks concurrent runs, skipping", "num actibe", len(activeJobs))
+		return scheduledResult, nil
+	}
+	// 或者希望我们替换一个 Job
+	if cronJob.Spec.ConcurrencyPolicy == batchv1.ReplaceConcurrent {
+		for _, activeJob := range activeJobs {
+			// 我们不关系 Job 是否已经被删除
+			if err := r.Delete(ctx, activeJob, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+				log.Error(err, "unable to delete active job", "job", activeJob)
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	// 一旦清楚如何处理现有 Job，便会真正创建所需的 Job
+	constructJobForCronJob := func(cronJob *batchv1.CronJob, scheduledTime time.Time) (*kbatchv1.Job, error) {
+		// 为了防止 Job 名称冲突
+		name := fmt.Sprintf("%s-%d", cronJob.Name, scheduledTime.Unix())
+
+		job := &kbatchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels:      make(map[string]string),
+				Annotations: make(map[string]string),
+				Name:        name,
+				Namespace:   cronJob.Namespace,
+			},
+			Spec: *cronJob.Spec.JobTemplate.Spec.DeepCopy(),
+		}
+		for k, v := range cronJob.Spec.JobTemplate.Annotations {
+			job.Annotations[k] = v
+		}
+		job.Annotations[scheduledTimeAnnotation] = scheduledTime.Format(time.RFC3339)
+		for k, v := range cronJob.Spec.JobTemplate.Labels {
+			job.Labels[k] = v
+		}
+		if err := ctrl.SetControllerReference(cronJob, job, r.Scheme); err != nil {
+			return nil, err
+		}
+		return job, nil
+	}
+	// 创建 job
+	job, err := constructJobForCronJob(&cronJob, missedRun)
+	if err != nil {
+		log.Error(err, "unable to construct job from template")
+		// 不要打扰重新入队，直到我们获得 spec 的改变
+		return scheduledResult, nil
+	}
+	// 在 k8s 集群上启动一个 Job Resource
+	if err := r.Create(ctx, job); err != nil {
+		log.Error(err, "unable to create Job for CronJob", "job", job)
+		return ctrl.Result{}, err
+	}
+	log.V(1).Info("created Job for CronJob run", "job", job)
+	// 7. 如果Job 正在运行或者他应该下次运行，请重新排队
+	// 当 Job 运行的时候吧下次需要运行的 Job object 放到队列中，并更新状态
+	return scheduledResult, nil
 }
+
+var (
+	jobOwnerKey = ".metadata.controller"
+	apiGVStr    = batchv1.GroupVersion.String()
+)
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *CronJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// 时钟初始化
+	if r.Clock == nil {
+		r.Clock = realClock{}
+	}
+	// 创建个索引器，jobOwnerKey 为该索引器的名称，func 为该索引关注的 Job 资源的值
+	ctx := context.Background()
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &kbatchv1.Job{}, jobOwnerKey, func(rawObj client.Object) []string {
+		// grab the job object, extract the owner...
+		job := rawObj.(*kbatchv1.Job)
+		owner := metav1.GetControllerOf(job)
+		if owner == nil {
+			return nil
+		}
+		// 确保是 CronJob
+		if owner.APIVersion != apiGVStr || owner.Kind != "CronJob" {
+			return nil
+		}
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
+		// For(&batchv1.CronJob{})：指定这个控制器的主要关注对象是 CronJob。
 		For(&batchv1.CronJob{}).
+		// Owns(&kbatchv1.Job{})：表示这个控制器还需要关注那些由 CronJob 拥有的 Job 对象。
+		// 会通知 manager 该 controller 拥有一些 Jobs， 以便在作业发生更改，删除等情况时，它将自动在基础 CronJob 上调用 Reconcile
 		Complete(r)
 }

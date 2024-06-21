@@ -92,9 +92,17 @@ func main() {
 	if err = (&controllers.CronJobReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		// 未赋值此 Log 字段时，Log 对应一个 logr.Logger 零值（结构体内的所有字段都为 零值）
+		Log: ctrl.Log.WithName("controllers").WithName("CronJob"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CronJob")
 		os.Exit(1)
+	}
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = (&batchv1.CronJob{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Captain")
+			os.Exit(1)
+		}
 	}
 	//+kubebuilder:scaffold:builder
 
